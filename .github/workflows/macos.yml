@@ -1,0 +1,17 @@
+name: Build macOS
+on: [push]
+
+jobs:
+  build:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Rust
+        run: rustup update stable
+      - name: Build
+        run: cargo build --release
+      - name: Upload Binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: mlide-macos
+          path: target/release/mlide
