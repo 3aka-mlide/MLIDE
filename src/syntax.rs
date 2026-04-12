@@ -3,36 +3,21 @@ use egui::text::LayoutJob;
 use std::sync::Arc;
 use std::collections::HashSet;
 
-// ─────────────────────────────────────────────
-//  VSCode Dark+ colour palette (accurate)
-// ─────────────────────────────────────────────
 mod col {
     use eframe::egui::Color32;
 
-    // Types / storage class  (#4EC9B0 teal / #569CD6 blue)
-    pub const TYPE_KEYWORD: Color32    = Color32::from_rgb(86,  156, 214); // blue  — int, char, bool…
-    pub const TYPE_USER:    Color32    = Color32::from_rgb(78,  201, 176); // teal  — user structs / classes
-    // Control flow (#C586C0 purple)
+    pub const TYPE_KEYWORD: Color32    = Color32::from_rgb(86,  156, 214); 
+    pub const TYPE_USER:    Color32    = Color32::from_rgb(78,  201, 176); 
     pub const CONTROL:      Color32    = Color32::from_rgb(197, 134, 192);
-    // Functions / macros (#DCDCAA yellow)
     pub const FUNCTION:     Color32    = Color32::from_rgb(220, 220, 170);
-    // Preprocessor (#9B59B6 lavender, VSCode uses #C8A0DC)
     pub const PREPROCESSOR: Color32    = Color32::from_rgb(189, 147, 249);
-    // String literals (#CE9178 orange-brown)
     pub const STRING:       Color32    = Color32::from_rgb(206, 145, 120);
-    // Numeric literals (#B5CEA8 green-grey)
     pub const NUMBER:       Color32    = Color32::from_rgb(181, 206, 168);
-    // Comments (#6A9955 green)
     pub const COMMENT:      Color32    = Color32::from_rgb(106, 153,  85);
-    // Operators / punctuation (#D4D4D4)
     pub const OPERATOR:     Color32    = Color32::from_rgb(212, 212, 212);
-    // Plain text
     pub const DEFAULT:      Color32    = Color32::from_rgb(212, 212, 212);
-    // Error underline
     pub const ERROR:        Color32    = Color32::from_rgb(255,  80,  80);
-    // Namespace / special identifiers (#4FC1FF light-blue)
     pub const NAMESPACE:    Color32    = Color32::from_rgb( 79, 193, 255);
-    // Constants / enum values (#4FC1FF or teal)
     pub const CONSTANT:     Color32    = Color32::from_rgb(100, 180, 255);
 }
 #[derive(Debug, PartialEq, Clone, Copy)]
@@ -46,9 +31,7 @@ pub enum Language {
     Makefile,
     CMake,
 }
-// ─────────────────────────────────────────────
-//  Keyword sets  (categorised like VSCode Dark+)
-// ─────────────────────────────────────────────
+
 const CSHARP_KEYWORDS: &[&str] = &[
     "abstract", "as", "base", "bool", "break", "byte", "case", "catch", "char", "checked",
     "class", "const", "continue", "decimal", "default", "delegate", "do", "double", "else",
@@ -111,7 +94,6 @@ const CPP_CONTROL_KEYWORDS: &[&str] = &[
     "switch", "case", "default",
     "try", "catch", "throw",
     "new", "delete", "co_await", "co_return", "co_yield",
-    // kernel / C
     "kfree", "kmalloc", "free", "malloc", "calloc", "realloc",
 ];
 

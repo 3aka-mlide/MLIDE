@@ -112,7 +112,6 @@ struct Data {
     error_lines:           HashSet<usize>,
     tx:                    Sender<String>,
     rx:                    Receiver<String>,
-    // new
     toasts:                Vec<Toast>,
     duplicate_pending:     bool,
     comment_pending:       bool,
@@ -320,7 +319,6 @@ impl Data {
         ConsoleLine { spans: vec![(text.to_string(), color)] }
     }
 
-    // ── Editor text operations ─────────────────────────────────────────────
     fn line_range(&self, cursor: usize) -> (usize, usize) {
         let start = self.content[..cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
         let end   = self.content[cursor..].find('\n').map(|p| cursor + p).unwrap_or(self.content.len());
@@ -427,26 +425,20 @@ impl eframe::App for Data {
         let mut do_save_all = false;
 
         ctx.input_mut(|i| {
-            // Escape / Ctrl+`  — toggle terminal
             if i.key_pressed(egui::Key::Escape)
                || (i.modifiers.command && i.key_pressed(egui::Key::Backtick))
             {
                 self.console_visible       = !self.console_visible;
                 self.target_console_height = if self.console_visible { 220.0 } else { 0.0 };
             }
-            // Ctrl+F  — search
             if i.modifiers.command && i.key_pressed(egui::Key::F) { self.show_search = !self.show_search; }
-            // Ctrl+P  — command palette
             if i.modifiers.command && i.key_pressed(egui::Key::P) { self.show_command_bar = !self.show_command_bar; }
-            // Ctrl+B  — toggle sidebar
             if i.modifiers.command && i.key_pressed(egui::Key::B) {
                 self.target_explorer_width = if self.target_explorer_width > 10.0 { 0.0 } else { 260.0 };
             }
-            // Ctrl+S / Ctrl+Shift+S
             if i.modifiers.command && i.key_pressed(egui::Key::S) {
                 if i.modifiers.shift { do_save_all = true; } else { do_save = true; }
             }
-            // Ctrl+W  — close tab
             if i.modifiers.command && i.key_pressed(egui::Key::W) {
                 if let Some(ref path) = self.current_file_path.clone() {
                     if let Some(idx) = self.open_tabs.iter().position(|t| &t.path == path) {
@@ -454,7 +446,6 @@ impl eframe::App for Data {
                     }
                 }
             }
-            // Ctrl+Tab — next tab
             if i.modifiers.command && i.key_pressed(egui::Key::Tab) && !self.open_tabs.is_empty() {
                 if let Some(ref path) = self.current_file_path.clone() {
                     let idx  = self.open_tabs.iter().position(|t| &t.path == path).unwrap_or(0);
@@ -465,11 +456,8 @@ impl eframe::App for Data {
                     self.is_md             = self.open_tabs[next].path.extension().map_or(false, |e| e == "md");
                 }
             }
-            // Ctrl+/  — toggle line comment
             if i.modifiers.command && i.key_pressed(egui::Key::Slash) { self.comment_pending = true; }
-            // Ctrl+D  — duplicate line
             if i.modifiers.command && i.key_pressed(egui::Key::D) { self.duplicate_pending = true; }
-            // Alt+Up / Alt+Down  — move line
             if i.modifiers.alt && i.key_pressed(egui::Key::ArrowUp)   { self.move_line_up   = true; }
             if i.modifiers.alt && i.key_pressed(egui::Key::ArrowDown)  { self.move_line_down = true; }
         });
@@ -622,18 +610,15 @@ impl eframe::App for Data {
                                 .code_editor().layouter(&mut layouter).frame(false)
                                 .desired_width(f32::INFINITY).show(ui);
 
-                            // Store cursor position for text ops
                             if let Some(cr) = output.cursor_range {
                                 self.cursor_pos = cr.primary.ccursor.index;
                             }
 
-                            // Apply pending operations (set flag in hotkey block, apply here with cursor)
                             if self.duplicate_pending { self.duplicate_current_line(); self.duplicate_pending = false; }
                             if self.comment_pending   { self.toggle_line_comment();    self.comment_pending   = false; }
                             if self.move_line_up      { self.move_line(true);          self.move_line_up      = false; }
                             if self.move_line_down    { self.move_line(false);         self.move_line_down    = false; }
 
-                            // Autocomplete hint
                             if output.response.has_focus() {
                                 let cp  = self.cursor_pos;
                                 let last = self.content.chars().take(cp).collect::<String>()
@@ -691,7 +676,6 @@ impl eframe::App for Data {
                             }
                         });
 
-                    // Right-click on output → copy / clear
                     let out_rect = scroll.inner_rect;
                     ui.interact(out_rect, ui.id().with("term_out"), egui::Sense::click())
                         .context_menu(|ui| {
@@ -717,12 +701,9 @@ impl eframe::App for Data {
                                 .hint_text("Enter command…"),
                         );
 
-                        // Ctrl+V in terminal input (keyboard)
                         if res.has_focus() {
                             ui.input_mut(|i| {
                                 if i.modifiers.command && i.key_pressed(egui::Key::V) {
-                                    // egui handles Ctrl+V natively for TextEdit — this is a fallback
-                                    // for platforms where it doesn't: read clipboard via arboard
                                     #[cfg(feature = "arboard")]
                                     if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                                         self.console_input.push_str(&text);
@@ -731,15 +712,12 @@ impl eframe::App for Data {
                             });
                         }
 
-                        // Right-click on input → paste / copy / clear
                         res.context_menu(|ui| {
                             if ui.button("📋 Paste  Ctrl+V").clicked() {
                                 #[cfg(feature = "arboard")]
                                 if let Ok(text) = arboard::Clipboard::new().and_then(|mut c| c.get_text()) {
                                     self.console_input.push_str(&text);
                                 }
-                                // egui copies clipboard text into OS clipboard on Ctrl+C;
-                                // if arboard feature is off, instruct user
                                 ui.close_menu();
                             }
                             if ui.button("📋 Copy Input").clicked() {
