@@ -31,5 +31,5 @@ Ensure you have the Rust toolchain installed. If not, get it at [rustup.rs](http
 ### Build from Source
 1. Clone the repository:
    ```bash
-   git clone [https://github.com/3aka-mlide/mlide.git](https://github.com/your-username/mlide.git)
+   git clone [https://github.com/3aka-mlide/mlide.git](https://github.com/3aka-mlide/mlide.git)
    cd mlide
