@@ -5,14 +5,18 @@ use eframe::egui;
 use std::path::PathBuf;
 use std::collections::HashSet;
 use walkdir::WalkDir;
-use std::process::Command;
+use std::process::{Command, Stdio, Child};
+use std::io::{BufRead, BufReader};
 use std::fs;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::atomic::AtomicU64;
+
+static LSP_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "ML Editor 1.0v",
+        "ML Editor 1.1v",
         native_options,
         Box::new(|cc| {
             setup_custom_fonts(&cc.egui_ctx);
@@ -80,6 +84,11 @@ struct Tab {
     is_dirty:       bool,
 }
 
+struct ClangdServer {
+    child: Child,
+    writer: std::process::ChildStdin,
+}
+
 struct Data {
     content:               String,
     explorer_width:        f32,
@@ -120,13 +129,37 @@ struct Data {
     cursor_pos:            usize,
 }
 
+impl ClangdServer {
+    fn new() -> Self {
+        let mut child = Command::new("clangd")
+            .arg("--log=verbose") 
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .spawn()
+            .expect("Failed to start clangd");
+
+        let writer = child.stdin.take().unwrap();
+        let stdout = child.stdout.take().unwrap();
+
+        std::thread::spawn(move || {
+            let mut reader = BufReader::new(stdout);
+            let mut line = String::new();
+            while reader.read_line(&mut line).is_ok() {
+                line.clear();
+            }
+        });
+
+        Self { child, writer }
+    }
+}
+
 impl Default for Data {
     fn default() -> Self {
         let (tx, rx) = channel();
         Self {
             content: String::new(),
             explorer_width: 260.0, target_explorer_width: 260.0,
-            console_height: 0.0,   target_console_height: 0.0,
+            console_height: 0.0, target_console_height: 0.0,
             current_path: None, expanded_folders: HashSet::new(),
             files: Vec::new(), console_visible: false,
             console_input: String::new(), console_output: Vec::new(),
@@ -176,11 +209,33 @@ impl Data {
             "cs"   => include_bytes!("cs.png"),
             "json" => include_bytes!("json.png"),
             "toml" => include_bytes!("toml.png"),
+            "asm" => include_bytes!("nasm.png"),
+            "s" => include_bytes!("nasm.png"),
+            "nasm" => include_bytes!("nasm.png"),
             _      => include_bytes!("file.png"),
         };
 
-        let uri = format!("bytes://{}.png", ext);
-        egui::Image::from_bytes(uri, bytes.to_vec())
+        	let uri = format!("bytes://{}.png", ext);
+       	 egui::Image::from_bytes(uri, bytes.to_vec())
+    }
+    fn get_word_at_index(&self, index: usize) -> Option<String> {
+        let content = &self.content;
+        if index >= content.len() { return None; }
+
+        let is_word_char = |c: char| c.is_alphanumeric() || c == '_' || c == '%' || c == '.';
+
+        let start = content[..index]
+            .rfind(|c| !is_word_char(c))
+            .map(|i| i + 1)
+            .unwrap_or(0);
+
+        let end = content[index..]
+            .find(|c| !is_word_char(c))
+            .map(|i| i + index)
+            .unwrap_or(content.len());
+
+        let word = content[start..end].trim();
+        if word.is_empty() { None } else { Some(word.to_string()) }
     }
     fn switch_to_tab(&mut self, idx: usize) {
         self.flush_active_tab();
@@ -398,7 +453,6 @@ impl Data {
 impl eframe::App for Data {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.flush_active_tab();
-
         while let Ok(msg) = self.rx.try_recv() {
             for line in msg.lines() {
                 let p = self.parse_line(line);
@@ -465,7 +519,6 @@ impl eframe::App for Data {
         if do_save     { self.save_current(); }
         if do_save_all { self.save_all(); }
 
-        // ── Top Panel ────────────────────────────────────────────────────────
         egui::TopBottomPanel::top("top_bar").frame(glass_frame.clone()).show(ctx, |ui| {
             ui.horizontal(|ui| {
                 ui.label("MLIDE");
@@ -490,6 +543,7 @@ impl eframe::App for Data {
                 if let Some(idx) = close_idx { self.close_tab(idx); }
 
                 ui.separator();
+                
                 if ui.button("📂 Open Folder").clicked() {
                     if let Some(p) = rfd::FileDialog::new().pick_folder() {
                         self.current_path = Some(p);
@@ -497,6 +551,52 @@ impl eframe::App for Data {
                     }
                 }
 
+                ui.separator();
+
+                if ui.button("▶ Run").clicked() {
+                    if let Some(ref root) = self.current_path {
+                        let mut cmd_name = String::new();
+                        let mut args = vec![];
+
+                        if root.join("Makefile").exists() {
+                            cmd_name = "make".to_string();
+                        } else if root.join("CMakeLists.txt").exists() {
+                            cmd_name = "cmake".to_string();
+                            args = vec!["--build".to_string(), ".".to_string(), "--target".to_string(), "run".to_string()];
+                        }
+
+                        if !cmd_name.is_empty() {
+                            self.console_output.push(ConsoleLine {
+                                spans: vec![(format!("> {} {}", cmd_name, args.join(" ")), egui::Color32::from_rgb(0, 255, 170))],
+                            });
+
+                            let root_clone = root.clone();
+                            let tx = self.tx.clone();
+                            let ctx_clone = ctx.clone();
+
+                            std::thread::spawn(move || {
+                                let output = Command::new(cmd_name)
+                                    .args(args)
+                                    .current_dir(root_clone)
+                                    .output(); 
+
+                                match output {
+                                    Ok(out) => {
+                                        let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+                                        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+                                        
+                                        if !stdout.is_empty() { let _ = tx.send(stdout); }
+                                        if !stderr.is_empty() { let _ = tx.send(stderr); }
+                                    }
+                                    Err(e) => {
+                                        let _ = tx.send(format!("Execution Error: {}", e));
+                                    }
+                                }
+                                ctx_clone.request_repaint();
+                            });
+                        }
+                    }
+                }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(
                         "Ctrl+S · Ctrl+/ · Ctrl+D · Alt+↑↓ · Ctrl+B · Ctrl+W · Ctrl+`"
@@ -606,55 +706,50 @@ impl eframe::App for Data {
                             let mut layouter = |ui: &egui::Ui, s: &str, w: f32| {
                                 syntax::highlight_code(ui, s, self.language, w, &self.libs, &self.error_lines)
                             };
+
                             let output = egui::TextEdit::multiline(&mut self.content)
-                                .code_editor().layouter(&mut layouter).frame(false)
-                                .desired_width(f32::INFINITY).show(ui);
+                                .code_editor()
+                                .layouter(&mut layouter)
+                                .frame(false)
+                                .desired_width(f32::INFINITY)
+                                .show(ui);
 
-                            if let Some(cr) = output.cursor_range {
-                                self.cursor_pos = cr.primary.ccursor.index;
-                            }
+                            if let Some(pointer_pos) = ctx.pointer_hover_pos() {
+                                if output.response.rect.contains(pointer_pos) {
+                                    let relative_pos = pointer_pos - output.response.rect.min;
 
-                            if self.duplicate_pending { self.duplicate_current_line(); self.duplicate_pending = false; }
-                            if self.comment_pending   { self.toggle_line_comment();    self.comment_pending   = false; }
-                            if self.move_line_up      { self.move_line(true);          self.move_line_up      = false; }
-                            if self.move_line_down    { self.move_line(false);         self.move_line_down    = false; }
-
-                            if output.response.has_focus() {
-                                let cp  = self.cursor_pos;
-                                let last = self.content.chars().take(cp).collect::<String>()
-                                    .split(|c: char| !c.is_alphanumeric() && c != '_')
-                                    .last().unwrap_or("").to_string();
-                                if last.len() > 2 {
-                                    if let Some(kw) = self.libs.iter().find(|k| k.starts_with(&last) && *k != &last).cloned() {
-                                        egui::show_tooltip(ctx, ui.layer_id(), egui::Id::new("hint"), |ui| {
-                                            ui.label(format!("Tab → {}", kw));
-                                        });
-                                        if ui.input(|i| i.key_pressed(egui::Key::Tab)) {
-                                            self.content.insert_str(cp, &kw[last.len()..]);
+                                    let cursor = output.galley.cursor_from_pos(relative_pos);
+                                    
+                                    if let Some(word) = self.get_word_at_index(cursor.ccursor.index) {
+                                        if let Some(info) = syntax::get_info(&word) {
+                                            egui::show_tooltip(
+                                                ui.ctx(),
+                                                ui.layer_id(),
+                                                egui::Id::new("code_tooltip"),
+                                                |ui| {
+                                                    ui.set_max_width(300.0);
+                                                    ui.label(egui::RichText::new(format!("Keyword: {}", word)).heading());
+                                                    ui.separator();
+                                                    ui.label(egui::RichText::new("Description:").strong());
+                                                    ui.label(info.meaning);
+                                                    ui.add_space(5.0);
+                                                    ui.label(egui::RichText::new("How to use:").strong().color(egui::Color32::from_rgb(120, 220, 120)));
+                                                    ui.label(info.fix);
+                                                }
+                                            );
                                         }
                                     }
                                 }
                             }
 
-                            output.response.context_menu(|ui| {
-                                if ui.button("📋 Copy").clicked() {
-                                    ui.ctx().copy_text(self.latent_selection.clone());
-                                    ui.close_menu();
-                                }
-                                ui.separator();
-                                if ui.add_enabled(!self.latent_selection.is_empty(),
-                                    egui::Button::new("🔂 Change All Occurrences")).clicked()
-                                {
-                                    self.renaming_target = Some(self.latent_selection.clone());
-                                    self.rename_buffer   = self.latent_selection.clone();
-                                    ui.close_menu();
-                                }
-                            });
+                            if let Some(cr) = output.cursor_range {
+                                self.cursor_pos = cr.primary.ccursor.index;
+                            }
+
                         });
                     });
                 }
             });
-
         // ── Terminal ─────────────────────────────────────────────────────────
         if self.console_height > 0.1 {
             egui::TopBottomPanel::bottom("terminal")
@@ -737,27 +832,6 @@ impl eframe::App for Data {
                     });
                 });
         }
-
-
-        // ── Refactor modal ───────────────────────────────────────────────────
-        if let Some(target) = self.renaming_target.clone() {
-            egui::Window::new("Refactor — Change All Occurrences")
-                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0]).collapsible(false)
-                .show(ctx, |ui| {
-                    ui.label(format!("Replace:  \"{}\"", target));
-                    ui.text_edit_singleline(&mut self.rename_buffer);
-                    ui.horizontal(|ui| {
-                        if ui.button("Apply").clicked() || ui.input(|i| i.key_pressed(egui::Key::Enter)) {
-                            let count = self.content.matches(&target).count();
-                            self.content = self.content.replace(&target, &self.rename_buffer);
-                            self.renaming_target = None;
-                            self.toasts.push(Toast::ok(format!("Replaced {} occurrence(s)", count)));
-                        }
-                        if ui.button("Cancel").clicked() { self.renaming_target = None; }
-                    });
-                });
-        }
-
         // ── File op modal ────────────────────────────────────────────────────
         if let Some((op, path)) = self.active_file_op.clone() {
             egui::Window::new("File Action")

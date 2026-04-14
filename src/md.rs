@@ -1,6 +1,7 @@
 use eframe::egui;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
 
+/* Base Markdown Viewer */
 pub struct MdViewer {
     cache: CommonMarkCache,
 }

@@ -6,19 +6,18 @@ use std::collections::HashSet;
 mod col {
     use eframe::egui::Color32;
 
-    pub const TYPE_KEYWORD: Color32    = Color32::from_rgb(86,  156, 214); 
-    pub const TYPE_USER:    Color32    = Color32::from_rgb(78,  201, 176); 
-    pub const CONTROL:      Color32    = Color32::from_rgb(197, 134, 192);
-    pub const FUNCTION:     Color32    = Color32::from_rgb(220, 220, 170);
-    pub const PREPROCESSOR: Color32    = Color32::from_rgb(189, 147, 249);
-    pub const STRING:       Color32    = Color32::from_rgb(206, 145, 120);
-    pub const NUMBER:       Color32    = Color32::from_rgb(181, 206, 168);
-    pub const COMMENT:      Color32    = Color32::from_rgb(106, 153,  85);
-    pub const OPERATOR:     Color32    = Color32::from_rgb(212, 212, 212);
-    pub const DEFAULT:      Color32    = Color32::from_rgb(212, 212, 212);
-    pub const ERROR:        Color32    = Color32::from_rgb(255,  80,  80);
-    pub const NAMESPACE:    Color32    = Color32::from_rgb( 79, 193, 255);
-    pub const CONSTANT:     Color32    = Color32::from_rgb(100, 180, 255);
+    pub const TYPE_KEYWORD: Color32 = Color32::from_rgb(86, 156, 214); 
+    pub const TYPE_USER:    Color32 = Color32::from_rgb(78, 201, 176); 
+    pub const CONTROL:      Color32 = Color32::from_rgb(197, 134, 192); 
+    pub const FUNCTION:     Color32 = Color32::from_rgb(220, 220, 170); 
+    pub const PREPROCESSOR: Color32 = Color32::from_rgb(155, 155, 155); 
+    pub const STRING:       Color32 = Color32::from_rgb(206, 145, 120); 
+    pub const NUMBER:       Color32 = Color32::from_rgb(181, 206, 168); 
+    pub const COMMENT:      Color32 = Color32::from_rgb(106, 153, 85);  
+    pub const DEFAULT:      Color32 = Color32::from_rgb(212, 212, 212); 
+    pub const ERROR:        Color32 = Color32::from_rgb(244, 71, 71);   
+    pub const NAMESPACE:    Color32 = Color32::from_rgb(79, 193, 255);  
+    pub const CONSTANT:     Color32 = Color32::from_rgb(214, 157, 133); 
 }
 #[derive(Debug, PartialEq, Clone, Copy)]
 pub enum Language {
@@ -30,6 +29,7 @@ pub enum Language {
     GitIgnore,
     Makefile,
     CMake,
+    Nasm
 }
 
 const CSHARP_KEYWORDS: &[&str] = &[
@@ -88,6 +88,42 @@ const CPP_TYPE_KEYWORDS: &[&str] = &[
     "static_cast", "dynamic_cast", "reinterpret_cast", "const_cast",
 ];
 
+const NASM_INSTRUCTIONS: &[&str] = &[
+    "mov", "movzx", "movsx", "movsxd", "lea", "push", "pop", "xchg", "cmov",
+    "cmove", "cmovne", "cmova", "cmovae", "cmovb", "cmovbe", "cmovg", "cmovge", "cmovl", "cmovle",
+    "add", "sub", "inc", "dec", "imul", "idiv", "mul", "div", "neg", "adc", "sbb",
+    "and", "or", "xor", "not", "shl", "shr", "sal", "sar", "rol", "ror", "bt", "bts", "btr",
+    "jmp", "call", "ret", "syscall", "int", "hlt", "nop", "pause",
+    "je", "jne", "jz", "jnz", "jg", "jge", "jl", "jle", "ja", "jae", "jb", "jbe", "jo", "jno", "js", "jns",
+    "cmp", "test", "clc", "stc", "std", "cld", "clts",
+    "movsb", "movsw", "movsd", "movsq", "stosb", "stosw", "stosd", "stosq", "lods", "scas", "cmps",
+    "rep", "repe", "repne", "repz", "repnz"
+];
+const NASM_REGISTERS: &[&str] = &[
+    "rax", "rbx", "rcx", "rdx", "rsi", "rdi", "rbp", "rsp", 
+    "r8", "r9", "r10", "r11", "r12", "r13", "r14", "r15",
+    "eax", "ebx", "ecx", "edx", "esi", "edi", "ebp", "esp", 
+    "r8d", "r9d", "r10d", "r11d", "r12d", "r13d", "r14d", "r15d",
+    "ax", "bx", "cx", "dx", "si", "di", "bp", "sp",
+    "al", "bl", "cl", "dl", "ah", "bh", "ch", "dh",
+    "spl", "bpl", "sil", "dil",
+    "rip", "cs", "ds", "es", "fs", "gs", "ss",
+    "xmm0", "xmm1", "xmm2", "xmm3", "xmm4", "xmm5", "xmm6", "xmm7",
+    "xmm8", "xmm9", "xmm10", "xmm11", "xmm12", "xmm13", "xmm14", "xmm15",
+    "ymm0", "zmm0", "st0", "st1", "st2"
+];
+
+const NASM_DIRECTIVES: &[&str] = &[
+    "section", "segment", ".text", ".data", ".bss", ".rodata",
+    "global", "extern", "common", "cpu", "default", "float",
+    "db", "dw", "dd", "dq", "dt", "do", "dy", "dz", "ddq",
+    "resb", "resw", "resd", "resq", "rest", "reso", "resy", "resz",
+    "equ", "times", "strict", "byte", "word", "dword", "qword", "tword", "oword", "yword", "zword",
+    "rel", "abs", "ptr",
+    "%define", "%undef", "%assign", "%defstr", "%deftok", "%macro", "%endmacro", 
+    "%if", "%elif", "%else", "%endif", "%ifdef", "%ifndef", "%include", "%line"
+];
+
 const CPP_CONTROL_KEYWORDS: &[&str] = &[
     "if", "else", "while", "for", "do",
     "return", "break", "continue", "goto",
@@ -132,6 +168,90 @@ pub struct KeywordInfo {
 
 pub fn get_info(word: &str) -> Option<KeywordInfo> {
     match word {
+        "mov" => Some(KeywordInfo {
+            meaning: "Move: Copies data from source to destination.",
+            fix: "Syntax: 'mov dest, src'. Note: Both operands cannot be memory.",
+        }),
+        "lea" => Some(KeywordInfo {
+            meaning: "Load Effective Address: Calculates an address without accessing memory.",
+            fix: "Great for fast math: 'lea rax, [rbx + rcx*4 + 8]' sets rax without a read.",
+        }),
+        "push" => Some(KeywordInfo {
+            meaning: "Push: Places a value onto the top of the stack.",
+            fix: "Decrements RSP by 8 (in 64-bit) and writes the value to [rsp].",
+        }),
+        "pop" => Some(KeywordInfo {
+            meaning: "Pop: Removes the top value from the stack into a register.",
+            fix: "Increments RSP by 8 after reading. Ensure pushes and pops are balanced!",
+        }),
+        "add" | "sub" => Some(KeywordInfo {
+            meaning: "Addition/Subtraction: Performs math on two operands.",
+            fix: "Updates flags (ZF, SF, CF). 'sub rax, rax' is a common way to zero a register.",
+        }),
+        "xor" => Some(KeywordInfo {
+            meaning: "Exclusive OR: Bitwise logic operation.",
+            fix: "Commonly used to zero registers: 'xor eax, eax' is smaller/faster than 'mov eax, 0'.",
+        }),
+        "inc" | "dec" => Some(KeywordInfo {
+            meaning: "Increment/Decrement: Adds or subtracts 1.",
+            fix: "Warning: 'inc' and 'dec' do NOT affect the Carry Flag (CF).",
+        }),
+        "jmp" => Some(KeywordInfo {
+            meaning: "Unconditional Jump: Changes execution to a different label.",
+            fix: "Use 'jmp label' to create loops or skip code blocks.",
+        }),
+        "cmp" => Some(KeywordInfo {
+            meaning: "Compare: Subtracts src from dest but only updates flags.",
+            fix: "Usually followed by a conditional jump like 'je' (equal) or 'jg' (greater).",
+        }),
+        "call" => Some(KeywordInfo {
+            meaning: "Call: Jumps to a procedure, pushing the return address to the stack.",
+            fix: "Always match a 'call' with a 'ret' inside the function.",
+        }),
+        "ret" => Some(KeywordInfo {
+            meaning: "Return: Pops the return address from the stack and jumps to it.",
+            fix: "Make sure the stack is in the same state it was at the start of the function.",
+        }),
+        "syscall" => Some(KeywordInfo {
+            meaning: "System Call: Transfers control to the OS kernel.",
+            fix: "In Linux x64: RAX = call number, RDI, RSI, RDX, R10, R8, R9 = args.",
+        }),
+        "rax" | "eax" | "ax" | "al" => Some(KeywordInfo {
+            meaning: "Accumulator Register: Used for arithmetic and syscall return values.",
+            fix: "64-bit: rax, 32-bit: eax, 16-bit: ax, 8-bit: al.",
+        }),
+        "rsp" | "esp" | "sp" => Some(KeywordInfo {
+            meaning: "Stack Pointer: Points to the current 'top' of the stack in memory.",
+            fix: "Grows downward. Manually changing RSP can crash your program if not careful.",
+        }),
+        "rbp" | "ebp" | "bp" => Some(KeywordInfo {
+            meaning: "Base Pointer: Used to reference local variables on the stack.",
+            fix: "Commonly used in 'stack frames' at the start of functions.",
+        }),
+        "rip" => Some(KeywordInfo {
+            meaning: "Instruction Pointer: Contains the address of the next instruction.",
+            fix: "You cannot 'mov' directly into RIP. Use 'jmp' or 'call' to change it.",
+        }),
+        "section" => Some(KeywordInfo {
+            meaning: "Section: Defines a segment of the object file.",
+            fix: "Use '.text' for code, '.data' for initialized data, '.bss' for zeros.",
+        }),
+        "global" => Some(KeywordInfo {
+            meaning: "Global: Makes a label visible to the linker.",
+            fix: "Example: 'global _start' is required for the entry point of a program.",
+        }),
+        "db" | "dw" | "dd" | "dq" => Some(KeywordInfo {
+            meaning: "Define Data: Reserves space and sets initial values.",
+            fix: "db (1 byte), dw (2), dd (4), dq (8). Use 'db' for strings.",
+        }),
+        "equ" => Some(KeywordInfo {
+            meaning: "Equal: Defines a constant value.",
+            fix: "Example: 'BUFFER_SIZE equ 1024'. This does not use memory at runtime.",
+        }),
+        "times" => Some(KeywordInfo {
+            meaning: "Times: Repeats an instruction or data declaration.",
+            fix: "Used in bootloaders: 'times 510-($-$$) db 0' pads the file to 512 bytes.",
+        }),
         "int" => Some(KeywordInfo {
             meaning: "Integer: 32-bit whole number (-2,147,483,648 to 2,147,483,647).",
             fix: "Use 'long long' for larger ranges. Beware signed overflow (UB in C++).",
@@ -306,6 +426,13 @@ pub fn highlight_code(
                     state = State::StringLit { quote: ch, verbatim: false };
                     push(&mut job, &ch.to_string(), col::STRING, current_line, &font);
                 } 
+                else if (ch == '/' && peek == Some('/')) || 
+                        (matches!(lang, Language::CMake | Language::Makefile | Language::Toml | Language::GitIgnore) && ch == '#') ||
+                        (lang == Language::Nasm && ch == ';') { 
+                    let symbol = if ch == '#' { "#" } else if ch == ';' { ";" } else { i += 1; "//" };
+                    push(&mut job, symbol, col::COMMENT, current_line, &font);
+                    state = State::LineComment;
+                }
                 else if ch == '$' && peek == Some('{') && lang == Language::CMake {
                     let start = byte_pos;
                     let mut j = i;
@@ -336,6 +463,22 @@ pub fn highlight_code(
                         Language::CMake => if CMAKE_FUNCTIONS.contains(&word) { col::FUNCTION } else { col::DEFAULT },
                         Language::Makefile => if MAKEFILE_KEYWORDS.contains(&word) { col::CONTROL } else { col::DEFAULT },
                         Language::Json | Language::Toml => if JSON_TOML_CONSTANTS.contains(&word) { col::CONTROL } else { col::DEFAULT },
+                        Language::Nasm => {
+                            let lower = word.to_lowercase();
+                            let w_ref = lower.as_str();
+                            
+                            if NASM_INSTRUCTIONS.contains(&w_ref) { 
+                                col::CONTROL 
+                            } else if NASM_REGISTERS.contains(&w_ref) { 
+                                col::TYPE_KEYWORD 
+                            } else if NASM_DIRECTIVES.contains(&w_ref) { 
+                                col::PREPROCESSOR 
+                            } else if word.ends_with(':') { 
+                                col::FUNCTION
+                            } else { 
+                                col::DEFAULT 
+                            }
+                        },
                         _ => col::DEFAULT,
                     };
                     
