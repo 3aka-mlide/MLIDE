@@ -1,6 +1,6 @@
 [package]
 name = "mlide"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2024"
 
 [dependencies]
@@ -16,6 +16,7 @@ egui_commonmark = { version = "0.18", default-features = false }
 serde_json = "1.0"      
 serde = { version = "1.0", features = ["derive"] }
 crossbeam-channel = "0.5" 
+capstone = "0.11.0"
 
 [features]
 arboard = []

@@ -1,22 +1,19 @@
 mod syntax;
 mod md;
+mod disassembler;
 
 use eframe::egui;
 use std::path::PathBuf;
 use std::collections::HashSet;
 use walkdir::WalkDir;
-use std::process::{Command, Stdio, Child};
-use std::io::{BufRead, BufReader};
 use std::fs;
 use std::sync::mpsc::{channel, Receiver, Sender};
-use std::sync::atomic::AtomicU64;
-
-static LSP_ID_COUNTER: AtomicU64 = AtomicU64::new(1);
+use std::process::Command;
 
 fn main() -> eframe::Result<()> {
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
-        "ML Editor 1.1v",
+        "ML Editor 1.2v",
         native_options,
         Box::new(|cc| {
             setup_custom_fonts(&cc.egui_ctx);
@@ -84,11 +81,6 @@ struct Tab {
     is_dirty:       bool,
 }
 
-struct ClangdServer {
-    child: Child,
-    writer: std::process::ChildStdin,
-}
-
 struct Data {
     content:               String,
     explorer_width:        f32,
@@ -102,19 +94,17 @@ struct Data {
     console_input:         String,
     console_output:        Vec<ConsoleLine>,
     current_file_path:     Option<PathBuf>,
-    latent_selection:      String,
     md_viewer:             md::MdViewer,
     is_md:                 bool,
+    is_md_preview_active: bool,
     show_search:           bool,
     show_command_bar:      bool,
-    search_query:          String,
-    replace_query:         String,
+    binary_data: Vec<u8>, 
+    is_hex: bool,         
     language: syntax::Language,
+    active_byte_idx: Option<usize>,
     open_tabs:             Vec<Tab>,
-    scroll_to_match:       bool,
     is_image:              bool,
-    renaming_target:       Option<String>,
-    rename_buffer:         String,
     active_file_op:        Option<(FileOp, PathBuf)>,
     file_op_buffer:        String,
     libs:                  HashSet<String>,
@@ -126,31 +116,8 @@ struct Data {
     comment_pending:       bool,
     move_line_up:          bool,
     move_line_down:        bool,
+    
     cursor_pos:            usize,
-}
-
-impl ClangdServer {
-    fn new() -> Self {
-        let mut child = Command::new("clangd")
-            .arg("--log=verbose") 
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .spawn()
-            .expect("Failed to start clangd");
-
-        let writer = child.stdin.take().unwrap();
-        let stdout = child.stdout.take().unwrap();
-
-        std::thread::spawn(move || {
-            let mut reader = BufReader::new(stdout);
-            let mut line = String::new();
-            while reader.read_line(&mut line).is_ok() {
-                line.clear();
-            }
-        });
-
-        Self { child, writer }
-    }
 }
 
 impl Default for Data {
@@ -163,12 +130,13 @@ impl Default for Data {
             current_path: None, expanded_folders: HashSet::new(),
             files: Vec::new(), console_visible: false,
             console_input: String::new(), console_output: Vec::new(),
-            current_file_path: None, latent_selection: String::new(),
-            md_viewer: md::MdViewer::default(), is_md: false,
+            current_file_path: None,
+            active_byte_idx: None,
+            md_viewer: md::MdViewer::default(), is_md: false, is_hex: false,
+            binary_data: Vec::new(),
             show_command_bar: false, open_tabs: Vec::new(),
-            scroll_to_match: false,
-            show_search: false, search_query: String::new(), replace_query: String::new(),
-            renaming_target: None, rename_buffer: String::new(),
+            is_md_preview_active: false,
+            show_search: false,
             active_file_op: None, file_op_buffer: String::new(),
             libs: HashSet::new(), error_lines: HashSet::new(),
             tx, rx,
@@ -182,7 +150,7 @@ impl Default for Data {
     }
 }
 
-impl Data {
+impl Data { 
     // ── Tab management ─────────────────────────────────────────────────────
     fn flush_active_tab(&mut self) {
         if let Some(ref path) = self.current_file_path.clone() {
@@ -209,6 +177,7 @@ impl Data {
             "cs"   => include_bytes!("cs.png"),
             "json" => include_bytes!("json.png"),
             "toml" => include_bytes!("toml.png"),
+            "gitignore" => include_bytes!("gitignore.png"),
             "asm" => include_bytes!("nasm.png"),
             "s" => include_bytes!("nasm.png"),
             "nasm" => include_bytes!("nasm.png"),
@@ -243,7 +212,11 @@ impl Data {
         self.current_file_path = Some(self.open_tabs[idx].path.clone());
         self.is_md             = self.open_tabs[idx].path.extension().map_or(false, |e| e == "md");
     }
-
+    fn line_range(&self, cursor: usize) -> (usize, usize) {
+        let start = self.content[..cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
+        let end   = self.content[cursor..].find('\n').map(|p| cursor + p).unwrap_or(self.content.len());
+        (start, end)
+    }
     fn close_tab(&mut self, idx: usize) {
         let was_active = self.current_file_path.as_ref() == Some(&self.open_tabs[idx].path);
         self.open_tabs.remove(idx);
@@ -262,16 +235,15 @@ impl Data {
     // ── File I/O ───────────────────────────────────────────────────────────
     fn save_current(&mut self) {
         if let Some(path) = self.current_file_path.clone() {
-            match fs::write(&path, &self.content) {
-                Ok(_) => {
-                    if let Some(tab) = self.open_tabs.iter_mut().find(|t| t.path == path) {
-                        tab.is_dirty = false;
-                        tab.cached_content = self.content.clone();
-                    }
-                    let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                    self.toasts.push(Toast::ok(format!("✔  Saved  {}", name)));
-                }
-                Err(e) => self.toasts.push(Toast::err(format!("✘  Save failed: {}", e))),
+            let result = if self.is_hex {
+                fs::write(&path, &self.binary_data)
+            } else {
+                fs::write(&path, &self.content)
+            };
+
+            match result {
+                Ok(_) => self.toasts.push(Toast::ok("✔ Saved")),
+                Err(e) => self.toasts.push(Toast::err(format!("✘ Save failed: {}", e))),
             }
         }
     }
@@ -373,67 +345,181 @@ impl Data {
                     else                                            { egui::Color32::from_rgb(180, 180, 180) };
         ConsoleLine { spans: vec![(text.to_string(), color)] }
     }
-
-    fn line_range(&self, cursor: usize) -> (usize, usize) {
-        let start = self.content[..cursor].rfind('\n').map(|p| p + 1).unwrap_or(0);
-        let end   = self.content[cursor..].find('\n').map(|p| cursor + p).unwrap_or(self.content.len());
-        (start, end)
-    }
-
-    fn duplicate_current_line(&mut self) {
-        let (start, end) = self.line_range(self.cursor_pos);
-        let line = self.content[start..end].to_string();
-        self.content.insert_str(end, &format!("\n{}", line));
-    }
-
-    fn toggle_line_comment(&mut self) {
-        let (start, end) = self.line_range(self.cursor_pos);
-        let line     = self.content[start..end].to_string();
-        let trimmed  = line.trim_start();
-        let indent: String = line.chars().take_while(|c| c.is_whitespace()).collect();
-        let new_line = if trimmed.starts_with("// ") {
-            format!("{}{}", indent, &trimmed[3..])
-        } else if trimmed.starts_with("//") {
-            format!("{}{}", indent, &trimmed[2..])
-        } else {
-            format!("{}// {}", indent, trimmed)
-        };
-        self.content.replace_range(start..end, &new_line);
-    }
-
-	fn handle_file_click(&mut self, file: &PathBuf) {
+    fn handle_file_click(&mut self, file: &PathBuf) {
         let ext = file.extension().and_then(|s| s.to_str()).unwrap_or_default().to_lowercase();
         let is_img = matches!(ext.as_str(), "png" | "jpg" | "jpeg" | "gif" | "bmp");
+        let known_binary_ext = matches!(ext.as_str(), "bin" | "exe" | "elf" | "img" | "o" | "boot" | "dat");
 
-        if is_img {
-            self.is_image = true;
-            self.is_md = false;
-            self.current_file_path = Some(file.clone());
-        } else if let Ok(c) = fs::read_to_string(file) {
-            self.is_image = false;
-            self.is_md = ext == "md";
+        self.is_md_preview_active = false;
+        self.is_image = false;
+        self.is_md = false;
+        self.is_hex = false; 
+
+        if known_binary_ext {
+            self.open_as_hex(file);
+            self.is_hex = true; 
             self.flush_active_tab();
-
-            self.language = match ext.as_str() {
-                "rs" => syntax::Language::Rust,
-                "cs" => syntax::Language::CSharp,
-                _ => syntax::Language::Cpp,
-            };
-
-            if let Some(idx) = self.open_tabs.iter().position(|t| t.path == *file) {
-                self.content = self.open_tabs[idx].cached_content.clone();
-            } else {
-                self.content = c.clone();
-                self.open_tabs.push(Tab { 
-                    path: file.clone(), 
-                    cached_content: c, 
-                    is_dirty: false 
-                });
-            }
             self.current_file_path = Some(file.clone());
+        } 
+        else if is_img {
+            self.is_image = true;
+            self.current_file_path = Some(file.clone());
+        } 
+        else {
+            match fs::read(file) {
+                Ok(bytes) => {
+                    match String::from_utf8(bytes) {
+                        Ok(c) => {
+                            self.is_md = ext == "md";
+                            self.flush_active_tab();
+
+                            self.language = match ext.as_str() {
+                                "rs" => syntax::Language::Rust,
+                                "cs" => syntax::Language::CSharp,
+                                "asm" | "s" | "nasm" => syntax::Language::Nasm, 
+                                "json" => syntax::Language::Json,
+                                "toml" => syntax::Language::Toml,
+                                "gitignore" => syntax::Language::GitIgnore,
+                                "cpp" | "c" | "hpp" | "h" => syntax::Language::Cpp,
+                                _ => syntax::Language::Plain,
+                            };
+
+                            if let Some(idx) = self.open_tabs.iter().position(|t| t.path == *file) {
+                                self.content = self.open_tabs[idx].cached_content.clone();
+                            } else {
+                                self.content = c.clone();
+                                self.open_tabs.push(Tab { 
+                                    path: file.clone(), 
+                                    cached_content: c, 
+                                    is_dirty: false 
+                                });
+                            }
+                            self.current_file_path = Some(file.clone());
+                        }
+                        Err(_) => {
+                            self.is_hex = true;
+                            self.open_as_hex(file);
+                            self.flush_active_tab();
+                            self.current_file_path = Some(file.clone());
+                        }
+                    }
+                }
+                Err(_) => {
+                }
+            }
         }
     }
+    fn render_hex_editor(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("HEX EDITOR").strong().color(egui::Color32::LIGHT_BLUE));
+        ui.separator();
 
+        egui::ScrollArea::vertical().id_salt("hex_scroll").show(ui, |ui| {
+            let mut hex_display = String::new();
+            let chunk_size = 16;
+
+            for (i, chunk) in self.binary_data.chunks(chunk_size).enumerate() {
+                hex_display.push_str(&format!("{:08X}: ", i * chunk_size));
+                for byte in chunk { hex_display.push_str(&format!("{:02X} ", byte)); }
+                if chunk.len() < chunk_size {
+                    for _ in 0..(chunk_size - chunk.len()) { hex_display.push_str("   "); }
+                }
+                hex_display.push_str(" | ");
+                for &byte in chunk {
+                    hex_display.push(if byte >= 32 && byte <= 126 { byte as char } else { '.' });
+                }
+                hex_display.push('\n');
+            }
+
+            let active_idx = self.active_byte_idx; 
+            let mut layouter = |ui: &egui::Ui, string: &str, _wrap_width: f32| {
+                let mut job = egui::text::LayoutJob::default();
+                let font_id = egui::TextStyle::Monospace.resolve(ui.style());
+                
+                for (line_idx, line) in string.lines().enumerate() {
+                    if let Some((hex_part, ascii_part)) = line.split_once(" | ") {
+                        let (addr, bytes_str) = hex_part.split_at(10);
+                        job.append(addr, 0.0, egui::TextFormat::simple(font_id.clone(), egui::Color32::GRAY));
+
+                        for (byte_in_line, word) in bytes_str.split_inclusive(' ').enumerate() {
+                            let mut format = egui::TextFormat::simple(font_id.clone(), egui::Color32::LIGHT_GRAY);
+                            if active_idx == Some(line_idx * 16 + byte_in_line) {
+                                format.background = egui::Color32::from_rgb(40, 40, 40); 
+                                format.color = egui::Color32::GOLD;
+                            }
+                            job.append(word, 0.0, format);
+                        }
+
+                        job.append(" | ", 0.0, egui::TextFormat::simple(font_id.clone(), egui::Color32::LIGHT_GRAY));
+
+                        for (char_idx, c) in ascii_part.chars().enumerate() {
+                            let mut format = egui::TextFormat::simple(font_id.clone(), egui::Color32::WHITE);
+                            let current_data_idx = line_idx * 16 + char_idx;
+                            
+                            if active_idx == Some(current_data_idx) {
+                                format.background = egui::Color32::from_rgb(0, 150, 100); 
+                                format.color = egui::Color32::BLACK;
+                            }
+                            job.append(&c.to_string(), 0.0, format);
+                        }
+                    }
+                    job.append("\n", 0.0, egui::TextFormat::default());
+                }
+                ui.fonts(|f| f.layout_job(job))
+            };
+
+            let _edit = egui::TextEdit::multiline(&mut hex_display)
+                .font(egui::TextStyle::Monospace)
+                .layouter(&mut layouter)
+                .desired_width(f32::INFINITY);
+
+            let output = egui::TextEdit::multiline(&mut hex_display)
+                .font(egui::TextStyle::Monospace)
+                .layouter(&mut layouter)
+                .desired_width(f32::INFINITY)
+                .show(ui);
+
+            if let Some(cursor) = output.cursor_range { 
+                let row = cursor.primary.pcursor.paragraph;
+                let col = cursor.primary.pcursor.offset;
+                
+                if col >= 10 && col < 58 {
+                    self.active_byte_idx = Some(row * 16 + (col - 10) / 3);
+                } else if col >= 61 {
+                    self.active_byte_idx = Some(row * 16 + (col - 61));
+                }
+            }
+
+            if output.response.changed() {
+                let mut new_bytes = Vec::new();
+                for line in hex_display.lines() {
+                    let hex_part = line.split('|').next().unwrap_or("");
+                    if let Some(data) = hex_part.split(':').nth(1) {
+                        for word in data.split_whitespace() {
+                            let clean_word = if word.len() > 2 { &word[0..2] } else { word };
+                            if let Ok(byte) = u8::from_str_radix(clean_word, 16) {
+                                new_bytes.push(byte);
+                            }
+                        }
+                    }
+                }
+                if !new_bytes.is_empty() { 
+                    self.binary_data = new_bytes; 
+                }
+            }
+        });
+    }
+
+    fn open_as_hex(&mut self, path: &PathBuf) {
+        if let Ok(bytes) = fs::read(path) {
+            self.binary_data = bytes;
+            self.is_hex = true;
+            self.is_image = false;
+            self.is_md = false;
+            self.language = syntax::Language::Hex;
+            self.current_file_path = Some(path.clone());
+            self.toasts.push(Toast::ok("Opened in Hex View"));
+        }
+    }
     fn move_line(&mut self, up: bool) {
         let (start, end) = self.line_range(self.cursor_pos);
         let line = self.content[start..end].to_string();
@@ -484,6 +570,11 @@ impl eframe::App for Data {
             {
                 self.console_visible       = !self.console_visible;
                 self.target_console_height = if self.console_visible { 220.0 } else { 0.0 };
+            }
+            if i.key_pressed(egui::Key::F5) {
+                if self.is_md || self.is_md_preview_active {
+                    self.is_md_preview_active = !self.is_md_preview_active;
+                }
             }
             if i.modifiers.command && i.key_pressed(egui::Key::F) { self.show_search = !self.show_search; }
             if i.modifiers.command && i.key_pressed(egui::Key::P) { self.show_command_bar = !self.show_command_bar; }
@@ -599,7 +690,7 @@ impl eframe::App for Data {
                 }
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                     ui.label(egui::RichText::new(
-                        "Ctrl+S · Ctrl+/ · Ctrl+D · Alt+↑↓ · Ctrl+B · Ctrl+W · Ctrl+`"
+                        "Ctrl+S · Ctrl+/ · Ctrl+D · Alt+↑↓ · Ctrl+B · Ctrl+W · Ctrl+` · F5"
                     ).small().color(egui::Color32::from_rgb(70, 70, 90)));
                 });
             });
@@ -688,8 +779,12 @@ impl eframe::App for Data {
         egui::CentralPanel::default()
             .frame(egui::Frame::none().fill(egui::Color32::TRANSPARENT))
             .show(ctx, |ui| {
-                if self.is_md {
+                if self.is_md_preview_active {
+                    ui.heading("Markdown Preview (F5 to close)");
+                    ui.separator();
                     self.md_viewer.render(ui, &self.content);
+                } else if self.is_hex {
+                    self.render_hex_editor(ui);
                 } else if self.is_image {
                     if let Some(path) = &self.current_file_path {
                         egui::ScrollArea::both().show(ui, |ui| {

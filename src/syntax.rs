@@ -29,7 +29,9 @@ pub enum Language {
     GitIgnore,
     Makefile,
     CMake,
-    Nasm
+    Nasm,
+    Hex,
+    Plain
 }
 
 const CSHARP_KEYWORDS: &[&str] = &[
