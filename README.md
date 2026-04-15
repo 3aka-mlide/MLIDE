@@ -22,6 +22,7 @@ A lightweight, high-performance code editor built with **Rust** and **egui**. De
 | `Ctrl + B` | Toggle File Explorer |
 | `Ctrl + Backtick` | Toggle Terminal |
 | `Ctrl + W` | Close current tab |
+| `F5` | Turn on Markdown viewer |
 
 ## Installation
 
